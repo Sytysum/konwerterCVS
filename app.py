@@ -1,10 +1,10 @@
-
 from flask import Flask, request, send_file, render_template_string
 import pandas as pd
 import io
 import re
 from datetime import datetime
 import csv
+import os
 
 app = Flask(__name__)
 
@@ -16,13 +16,31 @@ HTML_PAGE = '''
 </head>
 <body>
     <h1>Konwerter danych promocyjnych</h1>
-    <form action="/convert" method="post" enctype="multipart/form-data">
+    <form id="form" action="/convert" method="post" enctype="multipart/form-data">
+        <div id="fileInfo" style="display:none; margin-bottom:10px;">
+            <strong>Plik wgrany.</strong>
+            <button type='button' onclick='clearFile()' style='color:red; margin-left:10px;'>Usuń plik</button>
+        </div>
         <p>Wgraj plik CSV/Excel:</p>
-        <input type="file" name="file">
+        <input type="file" name="file" id="fileInput" onchange="handleFileUpload()">
         <p>Lub wklej dane z Excela:</p>
         <textarea name="clipboard" rows="10" cols="100"></textarea><br>
         <input type="submit" value="Generuj CSV">
     </form>
+    <script>
+        function handleFileUpload() {
+            document.getElementById('fileInfo').style.display = 'block';
+            document.getElementById('fileInput').disabled = true;
+            document.querySelector('textarea').disabled = true;
+        }
+        function clearFile() {
+            const input = document.getElementById('fileInput');
+            input.value = '';
+            input.disabled = false;
+            document.querySelector('textarea').disabled = false;
+            document.getElementById('fileInfo').style.display = 'none';
+        }
+    </script>
 </body>
 </html>
 '''
@@ -45,7 +63,6 @@ def parse_date(date_str):
         if re.match(r'\d{2}-\d{2}-\d{2} \d{1,2}:\d{2}', date_str):
             dt = datetime.strptime(date_str, '%d-%m-%y %H:%M')
         elif ',' in date_str and any(m in date_str for m in POLSKIE_MIESIACE):
-            # przykład: 'piątek, 11 kwiecień 2025'
             parts = date_str.split(', ')[1].split(' ')
             dzien = parts[0]
             miesiac = POLSKIE_MIESIACE.get(parts[1].lower(), '01')
@@ -59,26 +76,53 @@ def parse_date(date_str):
         return date_str
 
 def process_dataframe(df):
+    # Jeśli kolumny są nazwane liczbami (czyli brak nagłówków) - przypisz
     rename_map = {
-        'ERP ID': 'sku',
-        'Cena promocyjna': 'special_price',
-        'Data obowiązywania od': 'special_price_from',
-        'Data obowiązywania do': 'special_price_to',
-        'Ilość sztuk w promocji': 'import_promo_qty',
+        0: 'ERP ID',
+        1: 'Cena promocyjna',
+        2: 'Data obowiązywania od',
+        3: 'Data obowiązywania do',
+        4: 'Ilość sztuk w promocji'
     }
-    df = df.rename(columns=rename_map)
-    df['special_price'] = df['special_price'].apply(parse_price)
-    df['special_price_from'] = df['special_price_from'].apply(parse_date)
-    df['special_price_to'] = df['special_price_to'].apply(parse_date)
-    if 'import_promo_qty_use_central_stock' not in df.columns:
-        df['import_promo_qty_use_central_stock'] = ''
-    final_columns = [
-        'sku', 'special_price', 'special_price_from', 'special_price_to',
-        'import_promo_qty', 'import_promo_qty_use_central_stock'
-    ]
-    return df[final_columns]
+    if len(df.columns) >= 5:
+        # Nazwijmy kolumny jeśli ich nie ma
+        if not set(rename_map.values()).issubset(set(df.columns)):
+            df = df.iloc[:, :5]
+            df.columns = rename_map.values()
+        else:
+            df = df[[col for col in rename_map.values() if col in df.columns]]
 
-@app.route('/')
+        df = df.rename(columns={
+            'ERP ID': 'sku',
+            'Cena promocyjna': 'special_price',
+            'Data obowiązywania od': 'special_price_from',
+            'Data obowiązywania do': 'special_price_to',
+            'Ilość sztuk w promocji': 'import_promo_qty',
+        })
+
+        # Usuń wiersze bez SKU
+        df = df[df['sku'].notna()]
+
+        # Parsowanie
+        df['special_price'] = df['special_price'].apply(parse_price)
+        df['special_price_from'] = df['special_price_from'].apply(parse_date)
+        df['special_price_to'] = df['special_price_to'].apply(parse_date)
+
+        # Obsługa kolumny z magazynem centralnym
+        df['import_promo_qty'] = df['import_promo_qty'].fillna('').astype(str).str.strip()
+        df['import_promo_qty_use_central_stock'] = df.apply(
+            lambda row: '1' if row['import_promo_qty'] == '' else '',
+            axis=1
+        )
+        df['import_promo_qty'] = df['import_promo_qty'].replace('', '99')
+
+        final_columns = [
+            'sku', 'special_price', 'special_price_from', 'special_price_to',
+            'import_promo_qty', 'import_promo_qty_use_central_stock'
+        ]
+        return df[final_columns]
+    return pd.DataFrame()
+
 def index():
     return render_template_string(HTML_PAGE)
 
@@ -93,12 +137,12 @@ def convert():
     elif 'clipboard' in request.form and request.form['clipboard'].strip():
         text_data = request.form['clipboard']
         df = pd.read_csv(io.StringIO(text_data), sep='\t', header=None)
-        if df.shape[1] == 5:
-            df.columns = ['ERP ID', 'Cena promocyjna', 'Data obowiązywania od', 'Data obowiązywania do', 'Ilość sztuk w promocji']
     else:
         return 'Brak danych wejściowych', 400
 
     df_processed = process_dataframe(df)
+    if df_processed.empty:
+        return 'Niepoprawny format danych wejściowych', 400
 
     output = io.StringIO()
     df_processed.to_csv(output, index=False, encoding='utf-8')
@@ -112,7 +156,5 @@ def convert():
     )
 
 if __name__ == '__main__':
-    import os
-port = int(os.environ.get("PORT", 5000))
-app.run(debug=False, host="0.0.0.0", port=port)
-
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
