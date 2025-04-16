@@ -5,7 +5,8 @@ import re
 from datetime import datetime
 import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
+
 
 HTML_PAGE = '''
 <!DOCTYPE html>
