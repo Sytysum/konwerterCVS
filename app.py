@@ -3,7 +3,6 @@ import pandas as pd
 import io
 import re
 from datetime import datetime
-import csv
 import os
 
 app = Flask(__name__)
@@ -19,7 +18,7 @@ HTML_PAGE = '''
     <form id="form" action="/convert" method="post" enctype="multipart/form-data">
         <div id="fileInfo" style="display:none; margin-bottom:10px;">
             <strong>Plik wgrany.</strong>
-            <button type='button' onclick='clearFile()' style='color:red; margin-left:10px;'>Usuń plik</button>
+            <button type="button" onclick="clearFile()" style="color:red; margin-left:10px;">Usuń plik</button>
         </div>
         <p>Wgraj plik CSV/Excel:</p>
         <input type="file" name="file" id="fileInput" onchange="handleFileUpload()">
@@ -76,22 +75,10 @@ def parse_date(date_str):
         return date_str
 
 def process_dataframe(df):
-    # Jeśli kolumny są nazwane liczbami (czyli brak nagłówków) - przypisz
-    rename_map = {
-        0: 'ERP ID',
-        1: 'Cena promocyjna',
-        2: 'Data obowiązywania od',
-        3: 'Data obowiązywania do',
-        4: 'Ilość sztuk w promocji'
-    }
     if len(df.columns) >= 5:
-        # Nazwijmy kolumny jeśli ich nie ma
-        if not set(rename_map.values()).issubset(set(df.columns)):
-            df = df.iloc[:, :5]
-            df.columns = rename_map.values()
-        else:
-            df = df[[col for col in rename_map.values() if col in df.columns]]
-
+        df = df.iloc[:, :5]
+        df.columns = ['ERP ID', 'Cena promocyjna', 'Data obowiązywania od', 'Data obowiązywania do', 'Ilość sztuk w promocji']
+        df = df[df['ERP ID'].notna()]
         df = df.rename(columns={
             'ERP ID': 'sku',
             'Cena promocyjna': 'special_price',
@@ -99,23 +86,15 @@ def process_dataframe(df):
             'Data obowiązywania do': 'special_price_to',
             'Ilość sztuk w promocji': 'import_promo_qty',
         })
-
-        # Usuń wiersze bez SKU
-        df = df[df['sku'].notna()]
-
-        # Parsowanie
         df['special_price'] = df['special_price'].apply(parse_price)
         df['special_price_from'] = df['special_price_from'].apply(parse_date)
         df['special_price_to'] = df['special_price_to'].apply(parse_date)
-
-        # Obsługa kolumny z magazynem centralnym
         df['import_promo_qty'] = df['import_promo_qty'].fillna('').astype(str).str.strip()
         df['import_promo_qty_use_central_stock'] = df.apply(
             lambda row: '1' if row['import_promo_qty'] == '' else '',
             axis=1
         )
         df['import_promo_qty'] = df['import_promo_qty'].replace('', '99')
-
         final_columns = [
             'sku', 'special_price', 'special_price_from', 'special_price_to',
             'import_promo_qty', 'import_promo_qty_use_central_stock'
@@ -123,6 +102,7 @@ def process_dataframe(df):
         return df[final_columns]
     return pd.DataFrame()
 
+@app.route('/')
 def index():
     return render_template_string(HTML_PAGE)
 
